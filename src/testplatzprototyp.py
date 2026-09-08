@@ -1,7 +1,13 @@
+import importlib.metadata
+import json
 import os
+import queue
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -10,6 +16,7 @@ GERAETE_DIR = "geraete"
 SHARED_DIR = "shared"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ARBEITSVERZEICHNIS = os.path.join(SCRIPT_DIR, "Arbeitsverzeichnis")
+CONFIG_PATH = os.path.join(ARBEITSVERZEICHNIS, "config.json")
 
 
 class TestplatzApp(tk.Tk):
@@ -46,6 +53,148 @@ class TestplatzApp(tk.Tk):
             command=self.show_arbeitsplatz_screen,
         )
         button.pack(padx=20, pady=20)
+
+        if self._read_config():
+            tests_button = tk.Button(
+                frame, text="Tests starten", command=self.show_test_run_screen
+            )
+            tests_button.pack(padx=20, pady=(0, 20))
+
+    def _read_config(self):
+        if not os.path.isfile(CONFIG_PATH):
+            return None
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
+                data = json.load(config_file)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if data.get("geraet") and data.get("variante"):
+            return data
+        return None
+
+    def show_test_run_screen(self):
+        self._clear()
+        frame = tk.Frame(self)
+        frame.pack(expand=True, fill="both", padx=20, pady=20)
+
+        tk.Label(frame, text="Testausfuehrung:").pack(anchor="w")
+
+        text_frame = tk.Frame(frame)
+        text_frame.pack(expand=True, fill="both", pady=(10, 0))
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+        self.terminal_text = tk.Text(
+            text_frame,
+            bg="black",
+            fg="white",
+            state="disabled",
+            yscrollcommand=scrollbar.set,
+        )
+        self.terminal_text.pack(expand=True, fill="both")
+        scrollbar.config(command=self.terminal_text.yview)
+
+        back_button = tk.Button(frame, text="Zurueck", command=self.show_start_screen)
+        back_button.pack(pady=(10, 0))
+
+        self._run_tests_in_terminal()
+
+    def _run_tests_in_terminal(self):
+        config = self._read_config()
+        tests_path = os.path.join(
+            ARBEITSVERZEICHNIS, GERAETE_DIR, config["geraet"], config["variante"], "Tests"
+        )
+        requirements_path = self._find_requirements_path()
+
+        output_queue = queue.Queue()
+
+        def worker():
+            try:
+                self._ensure_dependencies_installed(requirements_path, output_queue)
+                output_queue.put(f"$ pytest {tests_path}\n\n")
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "pytest", tests_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                for line in process.stdout:
+                    output_queue.put(line)
+                process.wait()
+            except Exception as exc:
+                output_queue.put(f"Fehler beim Ausfuehren der Tests:\n{exc}\n")
+            finally:
+                output_queue.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._poll_test_output(output_queue)
+
+    @staticmethod
+    def _find_requirements_path():
+        """Bevorzugt die requirements.txt aus dem ausgecheckten Arbeitsverzeichnis."""
+        candidate = os.path.join(ARBEITSVERZEICHNIS, "requirements.txt")
+        if os.path.isfile(candidate):
+            return candidate
+        candidate = os.path.join(os.path.dirname(SCRIPT_DIR), "requirements.txt")
+        return candidate if os.path.isfile(candidate) else None
+
+    def _ensure_dependencies_installed(self, requirements_path, output_queue):
+        if not requirements_path:
+            output_queue.put("Keine requirements.txt gefunden, Abhaengigkeitspruefung uebersprungen.\n\n")
+            return
+
+        output_queue.put(f"Pruefe Abhaengigkeiten aus {requirements_path} ...\n")
+        missing = self._find_missing_packages(requirements_path)
+        if not missing:
+            output_queue.put("Alle Abhaengigkeiten sind bereits installiert.\n\n")
+            return
+
+        output_queue.put(f"Installiere fehlende Abhaengigkeiten: {', '.join(missing)}\n")
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pip", "install", "-r", requirements_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        for line in process.stdout:
+            output_queue.put(line)
+        process.wait()
+        output_queue.put("\n")
+
+    @staticmethod
+    def _find_missing_packages(requirements_path):
+        missing = []
+        with open(requirements_path, "r", encoding="utf-8") as requirements_file:
+            for line in requirements_file:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name = re.split(r"[<>=!~;\[]", line, maxsplit=1)[0].strip()
+                if not name:
+                    continue
+                try:
+                    importlib.metadata.version(name)
+                except importlib.metadata.PackageNotFoundError:
+                    missing.append(name)
+        return missing
+
+    def _poll_test_output(self, output_queue):
+        try:
+            while True:
+                line = output_queue.get_nowait()
+                if line is None:
+                    return
+                self._append_terminal_text(line)
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_test_output, output_queue)
+
+    def _append_terminal_text(self, text):
+        self.terminal_text.configure(state="normal")
+        self.terminal_text.insert("end", text)
+        self.terminal_text.see("end")
+        self.terminal_text.configure(state="disabled")
 
     def show_arbeitsplatz_screen(self):
         self._clear()
@@ -124,6 +273,14 @@ class TestplatzApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Fehler", f"Einrichtung fehlgeschlagen:\n{exc}")
             return
+
+        with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
+            json.dump(
+                {"geraet": self.geraet_var.get(), "variante": self.variante_var.get()},
+                config_file,
+                indent=2,
+            )
+
         messagebox.showinfo("Erfolg", f"Arbeitsplatz eingerichtet: {combined}")
 
     def _fetch_geraete_verzeichnisse(self):

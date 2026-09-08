@@ -1,1 +1,2 @@
-# Aktuell keine externen Abhängigkeiten (tkinter ist Teil der Python-Standardbibliothek)
+# tkinter ist Teil der Python-Standardbibliothek und benoetigt keinen Eintrag
+pytest
