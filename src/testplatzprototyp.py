@@ -110,17 +110,22 @@ class TestplatzApp(tk.Tk):
         def worker():
             try:
                 self._ensure_dependencies_installed(requirements_path, output_queue)
-                output_queue.put(f"$ pytest {tests_path}\n\n")
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "pytest", tests_path],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                for line in process.stdout:
-                    output_queue.put(line)
-                process.wait()
+                test_files = self._find_test_files(tests_path)
+                if not test_files:
+                    output_queue.put(f"Keine .py-Dateien in {tests_path} gefunden.\n")
+                for test_file in test_files:
+                    output_queue.put(f"$ pytest {test_file}\n\n")
+                    process = subprocess.Popen(
+                        [sys.executable, "-m", "pytest", test_file],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    for line in process.stdout:
+                        output_queue.put(line)
+                    process.wait()
+                    output_queue.put("\n")
             except Exception as exc:
                 output_queue.put(f"Fehler beim Ausfuehren der Tests:\n{exc}\n")
             finally:
@@ -128,6 +133,16 @@ class TestplatzApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
         self._poll_test_output(output_queue)
+
+    @staticmethod
+    def _find_test_files(tests_path):
+        if not os.path.isdir(tests_path):
+            return []
+        return sorted(
+            os.path.join(tests_path, name)
+            for name in os.listdir(tests_path)
+            if name.endswith(".py")
+        )
 
     @staticmethod
     def _find_requirements_path():
