@@ -1,0 +1,4 @@
+Firmware/Firmware.bin - Hashwert1
+Tests/1Test_Basic.py - Hashwert2
+Tests/2Test_Advanced.py - Hashwert3
+Tests/3Test_Final.py - Hashwert3
