@@ -1,0 +1,1 @@
+# Aktuell keine externen Abhängigkeiten (tkinter ist Teil der Python-Standardbibliothek)
