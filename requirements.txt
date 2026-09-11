@@ -1,2 +1,6 @@
 # tkinter ist Teil der Python-Standardbibliothek und benoetigt keinen Eintrag
 pytest
+requests
+python-dotenv
+pillow
+cairosvg
