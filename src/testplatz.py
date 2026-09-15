@@ -1295,14 +1295,101 @@ class TestplatzApp(tk.Tk):
             font=(FONT_FAMILY, 12, "bold"),
         ).pack(anchor="w", pady=(10, 6))
 
-        for test_datei in test_dateien or ["-"]:
+        if not test_dateien:
             tk.Label(
                 self.arbeitsplatz_info_frame,
-                text=test_datei,
+                text="-",
                 bg=BG_COLOR,
                 fg=MUTED_TEXT,
                 font=(FONT_FAMILY, 10),
             ).pack(anchor="w")
+            return
+
+        for test_datei in test_dateien:
+            test_path = os.path.join(tests_dir, test_datei)
+            test_button = HoverButton(
+                self.arbeitsplatz_info_frame,
+                bg=BG_COLOR,
+                hover_bg=CARD_COLOR,
+                text=test_datei,
+                fg=TEXT_COLOR,
+                activeforeground=TEXT_COLOR,
+                font=(FONT_FAMILY, 10),
+                anchor="w",
+                padx=0,
+                pady=2,
+                command=lambda path=test_path, name=test_datei: self._open_test_file(path, name),
+            )
+            test_button.pack(anchor="w", fill="x")
+
+    def _open_test_file(self, test_path, test_name):
+        try:
+            with open(test_path, "r", encoding="utf-8") as test_file:
+                test_content = test_file.read()
+        except (OSError, UnicodeError) as exc:
+            messagebox.showerror("Testdatei konnte nicht geoeffnet werden", str(exc), parent=self)
+            return
+
+        test_window = tk.Toplevel(self)
+        test_window.title(f"Test anzeigen: {test_name}")
+        test_window.geometry("900x650")
+        test_window.minsize(500, 350)
+        test_window.configure(bg=BG_COLOR)
+
+        header = tk.Frame(test_window, bg=BG_COLOR)
+        header.pack(fill="x", padx=24, pady=(20, 10))
+        tk.Label(
+            header,
+            text=test_name,
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+            font=(FONT_FAMILY, 16, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text=test_path,
+            bg=BG_COLOR,
+            fg=MUTED_TEXT,
+            font=(FONT_FAMILY, 9),
+        ).pack(anchor="w", pady=(4, 0))
+
+        content_frame = tk.Frame(test_window, bg=BG_COLOR)
+        content_frame.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+        content_frame.rowconfigure(0, weight=1)
+        content_frame.columnconfigure(0, weight=1)
+
+        test_text = tk.Text(
+            content_frame,
+            bg=CARD_COLOR,
+            fg=TEXT_COLOR,
+            insertbackground=TEXT_COLOR,
+            font=("Courier", 10),
+            wrap="none",
+            padx=12,
+            pady=10,
+            relief="flat",
+            state="normal",
+        )
+        test_text.grid(row=0, column=0, sticky="nsew")
+        vertical_scrollbar = tk.Scrollbar(content_frame, command=test_text.yview)
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar = tk.Scrollbar(content_frame, orient="horizontal", command=test_text.xview)
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        test_text.configure(yscrollcommand=vertical_scrollbar.set, xscrollcommand=horizontal_scrollbar.set)
+        test_text.insert("1.0", test_content)
+        test_text.configure(state="disabled")
+
+        HoverButton(
+            test_window,
+            bg=ACCENT_COLOR,
+            hover_bg=ACCENT_HOVER,
+            text="Schliessen",
+            fg="white",
+            font=(FONT_FAMILY, 10, "bold"),
+            padx=14,
+            pady=6,
+            command=test_window.destroy,
+        ).pack(anchor="e", padx=24, pady=(0, 20))
 
     def _on_arbeitsplatz_einrichten(self):
         self.arbeitsplatz_button.configure(state="disabled", text="Arbeitsplatz wird eingerichtet ...")
