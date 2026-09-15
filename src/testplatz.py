@@ -20,12 +20,12 @@ from keycloak_auth import DEFAULT_REDIRECT_URI, KeycloakAuthError, KeycloakAuthe
 
 load_dotenv()  # liest z.B. KEYCLOAK_CLIENT_SECRET aus einer lokalen .env-Datei
 
-BG_COLOR = "#0d1117"
-CARD_COLOR = "#161b22"
+BG_COLOR = "#ABB1BC"
+CARD_COLOR = "#96989b"
 ACCENT_COLOR = "#2f81f7"
 ACCENT_HOVER = "#1f6feb"
-TEXT_COLOR = "#e6edf3"
-MUTED_TEXT = "#8b949e"
+TEXT_COLOR = "#1f2937"
+MUTED_TEXT = "#2f3134"
 ERROR_COLOR = "#f85149"
 
 FONT_FAMILY = "Helvetica"
@@ -37,6 +37,7 @@ KEYCLOAK_REDIRECT_URI = os.environ.get("KEYCLOAK_REDIRECT_URI", DEFAULT_REDIRECT
 KEYCLOAK_LOGO_URL = os.environ.get(
     "KEYCLOAK_LOGO_URL", "https://www.newlift.de/assets/images/9/newlift-logo-07b8e79e.svg"
 )
+#https://www.newlift.de/assets/images/9/newlift-logo-07b8e79e.svg
 REST_API_BASE_URL = os.environ.get("REST_API_BASE_URL", "https://sso.embedded-future.de/restapi/api/v1")
 
 REPO_URL = os.environ.get("TESTPLATZ_REPO_URL", "https://github.com/ef-mm/ef_firmware_tests.git")
@@ -162,7 +163,9 @@ class TestplatzApp(tk.Tk):
 
     def _set_logged_in_state(self, logged_in):
         if logged_in:
-            self.navbar_status_label.configure(text="Angemeldet", fg=TEXT_COLOR)
+            username = self.auth.username
+            status_text = f"Eingeloggt als {username}" if username else "Angemeldet"
+            self.navbar_status_label.configure(text=status_text, fg=TEXT_COLOR)
             self.logout_button.pack(side="right", padx=(0, 24))
         else:
             self.navbar_status_label.configure(text="Nicht angemeldet", fg=MUTED_TEXT)
@@ -698,7 +701,8 @@ class TestplatzApp(tk.Tk):
             fg=TEXT_COLOR, text=f"Zusammenbau erfolgreich angelegt (Assembly-ID: {result})."
         )
 
-    def show_assembly_edit_page(self):
+    def show_assembly_edit_page(self, selected_assembly_sn=None):
+        self.edit_selected_assembly_sn = selected_assembly_sn
         body = self._build_subpage("Assembly bearbeiten")
         tk.Label(
             body,
@@ -758,6 +762,18 @@ class TestplatzApp(tk.Tk):
         self.edit_assembly_combobox.configure(values=[assembly["assemblies_sn"] for assembly in assemblies_list])
         self.edit_assembly_combobox.set("")
         status_label.configure(text="" if assemblies_list else "Keine Assemblies gefunden.", fg=MUTED_TEXT)
+
+        selected_assembly_sn = getattr(self, "edit_selected_assembly_sn", None)
+        if selected_assembly_sn:
+            selected_index = next(
+                (index for index, assembly in enumerate(assemblies_list)
+                 if assembly["assemblies_sn"] == selected_assembly_sn),
+                -1,
+            )
+            if selected_index >= 0:
+                self.edit_assembly_combobox.current(selected_index)
+                self._on_edit_assembly_selected()
+            self.edit_selected_assembly_sn = None
 
     def _on_edit_assembly_selected(self, event=None):
         for widget in self.edit_container.winfo_children():
@@ -881,8 +897,8 @@ class TestplatzApp(tk.Tk):
             font=(FONT_FAMILY, 11),
             width=40,
             bg=CARD_COLOR,
-            fg=TEXT_COLOR,
-            insertbackground=TEXT_COLOR,
+            fg="black",
+            insertbackground="black",
             relief="flat",
             highlightthickness=1,
             highlightbackground=MUTED_TEXT,
@@ -954,7 +970,7 @@ class TestplatzApp(tk.Tk):
             return
         edited_fields = [field for field in self.edit_fields.values() if field["edited"]]
         if edited_fields and all(field["valid"] for field in edited_fields):
-            self.edit_assembly_button.pack(pady=(20, 0))
+            self.edit_assembly_button.pack(anchor="w", pady=(20, 0))
         else:
             self.edit_assembly_button.pack_forget()
 
@@ -1021,10 +1037,8 @@ class TestplatzApp(tk.Tk):
             self.edit_status_label.configure(fg=ERROR_COLOR, text=f"Fehler beim Aendern der Assembly:\n{result}")
             return
 
-        self.edit_assembly_button.configure(state="disabled", text="Assembly geaendert")
-        self.edit_status_label.configure(
-            fg=TEXT_COLOR, text=f"Assembly erfolgreich geaendert (neue Iteration: {result})."
-        )
+        selected_assembly_sn = self.edit_current_assembly["assemblies_sn"]
+        self.show_assembly_edit_page(selected_assembly_sn=selected_assembly_sn)
 
     def show_test_page(self):
         body = self._build_subpage("Test starten", show_scrollbar=False)

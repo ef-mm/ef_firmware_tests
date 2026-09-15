@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import http.server
+import json
 import re
 import secrets
 import time
@@ -38,6 +39,20 @@ class KeycloakAuthenticator:
     @property
     def is_authenticated(self):
         return self._tokens is not None
+
+    @property
+    def username(self):
+        """Liefert den Benutzer fuer die reine Anzeige aus dem OIDC-Token."""
+        access_token = (self._tokens or {}).get("access_token", "")
+        token_parts = access_token.split(".")
+        if len(token_parts) != 3:
+            return None
+        try:
+            payload = base64.urlsafe_b64decode(token_parts[1] + "=" * (-len(token_parts[1]) % 4))
+            claims = json.loads(payload)
+        except (ValueError, json.JSONDecodeError):
+            return None
+        return claims.get("preferred_username") or claims.get("name") or claims.get("email")
 
     def login(self):
         """Blockierender Authorization-Code-Flow mit PKCE ueber den Systembrowser."""
