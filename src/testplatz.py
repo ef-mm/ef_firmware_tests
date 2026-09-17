@@ -2,6 +2,7 @@
 
 import importlib.metadata
 import io
+import json
 import os
 import queue
 import re
@@ -12,6 +13,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import cairosvg
+from jwt import decode as jwt_decode
+from jwt.exceptions import InvalidTokenError
 import requests
 from dotenv import load_dotenv
 from PIL import Image, ImageTk
@@ -20,13 +23,13 @@ from keycloak_auth import DEFAULT_REDIRECT_URI, KeycloakAuthError, KeycloakAuthe
 
 load_dotenv()  # liest z.B. KEYCLOAK_CLIENT_SECRET aus einer lokalen .env-Datei
 
-BG_COLOR = "#ABB1BC"
-CARD_COLOR = "#96989b"
-ACCENT_COLOR = "#2f81f7"
-ACCENT_HOVER = "#1f6feb"
-TEXT_COLOR = "#1f2937"
-MUTED_TEXT = "#2f3134"
-ERROR_COLOR = "#f85149"
+BG_COLOR = "#F3F8FF"
+CARD_COLOR = "#E2ECF9"
+ACCENT_COLOR = "#2F81F7"
+ACCENT_HOVER = "#1F6FEB"
+TEXT_COLOR = "#1F2937"
+MUTED_TEXT = "#4B5563"
+ERROR_COLOR = "#D94C4C"
 
 FONT_FAMILY = "Helvetica"
 
@@ -34,10 +37,6 @@ KEYCLOAK_ISSUER_URL = os.environ.get("KEYCLOAK_ISSUER_URL", "https://sso.embedde
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "ef_test_service_web")
 KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET")
 KEYCLOAK_REDIRECT_URI = os.environ.get("KEYCLOAK_REDIRECT_URI", DEFAULT_REDIRECT_URI)
-KEYCLOAK_LOGO_URL = os.environ.get(
-    "KEYCLOAK_LOGO_URL", "https://www.newlift.de/assets/images/9/newlift-logo-07b8e79e.svg"
-)
-#https://www.newlift.de/assets/images/9/newlift-logo-07b8e79e.svg
 REST_API_BASE_URL = os.environ.get("REST_API_BASE_URL", "https://sso.embedded-future.de/restapi/api/v1")
 
 REPO_URL = os.environ.get("TESTPLATZ_REPO_URL", "https://github.com/ef-mm/ef_firmware_tests.git")
@@ -69,7 +68,6 @@ class TestplatzApp(tk.Tk):
         super().__init__()
         self.title("Testplatz")
         self.geometry("1600x1050")
-        self.configure(bg=BG_COLOR)
         self._active_canvas = None
         self.bind_all("<MouseWheel>", self._on_mousewheel)
         self.bind_all("<Button-4>", lambda _e: self._scroll_active_canvas(-1))
@@ -80,10 +78,42 @@ class TestplatzApp(tk.Tk):
             client_secret=KEYCLOAK_CLIENT_SECRET,
             redirect_uri=KEYCLOAK_REDIRECT_URI,
         )
+        self._session_check_id = None
         self._build_navbar()
         self.content = tk.Frame(self, bg=BG_COLOR)
         self.content.pack(expand=True, fill="both")
         self.show_login_page()
+
+    @staticmethod
+    def _default_color_scheme():
+        return {
+            "BG_COLOR": "#F3F8FF",
+            "CARD_COLOR": "#E2ECF9",
+            "ACCENT_COLOR": "#2F81F7",
+            "ACCENT_HOVER": "#1F6FEB",
+            "TEXT_COLOR": "#1F2937",
+            "MUTED_TEXT": "#4B5563",
+            "ERROR_COLOR": "#D94C4C",
+        }
+
+    def _apply_website_color_scheme(self, color_scheme):
+        if not color_scheme:
+            colors = self._default_color_scheme()
+        else:
+            colors = self._default_color_scheme().copy()
+            assignments = re.findall(r'([A-Z_]+)\s*=\s*["\']([^"\']+)["\']', color_scheme)
+            for color_name, value in assignments:
+                if color_name in colors:
+                    colors[color_name] = value
+
+        for color_name, value in colors.items():
+            globals()[color_name] = value
+
+        self.configure(bg=BG_COLOR)
+        if getattr(self, "navbar", None) is not None:
+            self.navbar.configure(bg=CARD_COLOR)
+        if getattr(self, "content", None) is not None:
+            self.content.configure(bg=BG_COLOR)
 
     def _build_navbar(self):
         self.navbar = tk.Frame(self, bg=CARD_COLOR, height=60)
@@ -101,6 +131,7 @@ class TestplatzApp(tk.Tk):
             self.navbar, text="Nicht angemeldet", bg=CARD_COLOR, fg=MUTED_TEXT, font=(FONT_FAMILY, 10)
         )
         self.navbar_status_label.pack(side="right", padx=(0, 12))
+        self.navbar_status_label.bind("<Button-1>", self._show_access_token)
         self.logout_button = HoverButton(
             self.navbar,
             bg=CARD_COLOR,
@@ -122,15 +153,10 @@ class TestplatzApp(tk.Tk):
 
         def worker():
             try:
-                logo_url = None
-                for get_logo_url in (self.auth.get_admin_client_logo_url, self.auth.get_login_page_logo_url):
-                    try:
-                        logo_url = get_logo_url()
-                    except (requests.RequestException, KeycloakAuthError):
-                        logo_url = None
-                    if logo_url:
-                        break
-                logo_url = logo_url or KEYCLOAK_LOGO_URL
+                logo_url = self.auth.logo_url
+                if not logo_url:
+                    result_queue.put(None)
+                    return
 
                 response = requests.get(logo_url, timeout=10)
                 response.raise_for_status()
@@ -155,7 +181,8 @@ class TestplatzApp(tk.Tk):
             self.after(150, self._poll_navbar_logo, result_queue)
             return
 
-        if isinstance(result, Exception):
+        if result is None or isinstance(result, Exception):
+            self.navbar_logo_label.configure(image="")
             return
 
         self.navbar_logo_image = ImageTk.PhotoImage(result)
@@ -171,8 +198,59 @@ class TestplatzApp(tk.Tk):
             self.navbar_status_label.configure(text="Nicht angemeldet", fg=MUTED_TEXT)
             self.logout_button.pack_forget()
 
+    def _show_access_token(self, _event=None):
+        access_token = self.auth.access_token
+        if not access_token:
+            messagebox.showinfo("JWT-Token", "Es ist kein Keycloak-Access-Token vorhanden.")
+            return
+
+        try:
+            decoded_token = jwt_decode(access_token, options={"verify_signature": False})
+            token_content = json.dumps(decoded_token, indent=2, ensure_ascii=True)
+        except InvalidTokenError as exc:
+            messagebox.showerror("JWT-Token", f"Der JWT konnte nicht dekodiert werden: {exc}")
+            return
+
+        token_window = tk.Toplevel(self)
+        token_window.title("Dekodierter Keycloak-JWT-Token")
+        token_window.geometry("900x320")
+        token_window.transient(self)
+
+        text_widget = tk.Text(token_window, wrap="none", padx=8, pady=8)
+        text_widget.pack(side="left", expand=True, fill="both", padx=(8, 0), pady=8)
+        scrollbar = ttk.Scrollbar(token_window, orient="vertical", command=text_widget.yview)
+        scrollbar.pack(side="right", fill="y", padx=(0, 8), pady=8)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        text_widget.insert("1.0", token_content)
+        text_widget.configure(state="disabled")
+
+    def _schedule_session_check(self):
+        if self._session_check_id is not None:
+            self.after_cancel(self._session_check_id)
+            self._session_check_id = None
+
+        if self.auth.is_authenticated:
+            self._session_check_id = self.after(5000, self._check_session_validity)
+
+    def _check_session_validity(self):
+        self._session_check_id = None
+
+        if not self.auth.is_authenticated:
+            return
+
+        if not self.auth.is_access_token_valid():
+            self._on_logout()
+            return
+
+        self._schedule_session_check()
+
     def _on_logout(self):
+        if self._session_check_id is not None:
+            self.after_cancel(self._session_check_id)
+            self._session_check_id = None
+
         self.auth.logout()
+        self._apply_website_color_scheme(None)
         self._set_logged_in_state(False)
         self.show_login_page()
 
@@ -259,7 +337,10 @@ class TestplatzApp(tk.Tk):
             self.login_status_label.configure(text=error)
             return
 
+        self._apply_website_color_scheme(self.auth.website_color_scheme)
         self._set_logged_in_state(True)
+        self._load_navbar_logo()
+        self._schedule_session_check()
         self.show_main_page()
 
     def show_main_page(self):

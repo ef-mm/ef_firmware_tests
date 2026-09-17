@@ -40,19 +40,72 @@ class KeycloakAuthenticator:
     def is_authenticated(self):
         return self._tokens is not None
 
-    @property
-    def username(self):
-        """Liefert den Benutzer fuer die reine Anzeige aus dem OIDC-Token."""
+    def _decode_token_claims(self):
         access_token = (self._tokens or {}).get("access_token", "")
         token_parts = access_token.split(".")
         if len(token_parts) != 3:
             return None
         try:
             payload = base64.urlsafe_b64decode(token_parts[1] + "=" * (-len(token_parts[1]) % 4))
-            claims = json.loads(payload)
+            return json.loads(payload)
         except (ValueError, json.JSONDecodeError):
             return None
+
+    @property
+    def username(self):
+        """Liefert den Benutzer fuer die reine Anzeige aus dem OIDC-Token."""
+        claims = self._decode_token_claims()
+        if claims is None:
+            return None
         return claims.get("preferred_username") or claims.get("name") or claims.get("email")
+
+    @property
+    def logo_url(self):
+        """Liefert die Logo-URL aus dem Access-Token-Claim, falls vorhanden."""
+        claims = self._decode_token_claims()
+        if claims is None:
+            return None
+        logo_url = claims.get("logo_url") or None
+        if not logo_url:
+            return None
+        if logo_url.startswith("data:"):
+            return logo_url
+        if urllib.parse.urlparse(logo_url).scheme:
+            return logo_url
+        base_url = self.issuer_url.rstrip("/") + "/"
+        return urllib.parse.urljoin(base_url, logo_url)
+
+    @property
+    def website_color_scheme(self):
+        """Liefert das Farbtheme aus dem Access-Token-Claim, falls vorhanden."""
+        claims = self._decode_token_claims()
+        if claims is None:
+            return None
+        return claims.get("website_color_scheme") or None
+
+    @property
+    def access_token(self):
+        """Liefert den aktuell gespeicherten Access-Token fuer die Anzeige."""
+        return (self._tokens or {}).get("access_token")
+
+    def is_access_token_valid(self):
+        """True, wenn der aktuelle Access-Token noch nicht abgelaufen ist."""
+        if not self.is_authenticated:
+            return False
+
+        if time.time() >= self._expires_at:
+            return False
+
+        claims = self._decode_token_claims()
+        if not claims:
+            return False
+
+        exp = claims.get("exp")
+        if exp is None:
+            return True
+
+        expiration_time = float(exp)
+        return expiration_time > time.time() + TOKEN_EXPIRY_SAFETY_MARGIN_SECONDS
 
     def login(self):
         """Blockierender Authorization-Code-Flow mit PKCE ueber den Systembrowser."""
@@ -106,74 +159,6 @@ class KeycloakAuthenticator:
     def logout(self):
         self._tokens = None
         self._expires_at = 0.0
-
-    def get_admin_client_logo_url(self):
-        """Liest die logoUri aus den Client-Attributen (Erweiterte Einstellungen) via Keycloak Admin-API.
-
-        Benoetigt, dass der Service-Account des Clients die Rolle 'view-clients' des
-        'realm-management'-Clients besitzt. Gibt None zurueck, wenn kein Wert gesetzt ist.
-        """
-        token_endpoint = self._get_endpoints()["token_endpoint"]
-        token_response = requests.post(
-            token_endpoint,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=10,
-        )
-        if not token_response.ok:
-            raise KeycloakAuthError(
-                f"Service-Account-Token-Anfrage fehlgeschlagen ({token_response.status_code}): {token_response.text}"
-            )
-        service_account_token = token_response.json()["access_token"]
-
-        realm_marker = "/realms/"
-        realm_index = self.issuer_url.rfind(realm_marker)
-        if realm_index == -1:
-            raise KeycloakAuthError("Realm konnte nicht aus der Issuer-URL ermittelt werden.")
-        server_base = self.issuer_url[:realm_index]
-        realm_name = self.issuer_url[realm_index + len(realm_marker):]
-
-        admin_response = requests.get(
-            f"{server_base}/admin/realms/{realm_name}/clients",
-            params={"clientId": self.client_id},
-            headers={"Authorization": f"Bearer {service_account_token}"},
-            timeout=10,
-        )
-        if not admin_response.ok:
-            raise KeycloakAuthError(
-                f"Admin-API-Anfrage fehlgeschlagen ({admin_response.status_code}): {admin_response.text}"
-            )
-        clients = admin_response.json()
-        if not clients:
-            return None
-        return clients[0].get("attributes", {}).get("logoUri") or None
-
-    def get_login_page_logo_url(self):
-        """Versucht, die Theme-Logo-URL aus der gerenderten Keycloak-Login-Seite zu extrahieren."""
-        endpoints = self._get_endpoints()
-        params = {
-            "response_type": "code",
-            "client_id": self.client_id,
-            "redirect_uri": self.redirect_uri,
-            "scope": self.scope,
-        }
-        response = requests.get(endpoints["authorization_endpoint"], params=params, timeout=10)
-        response.raise_for_status()
-        html = response.text
-
-        patterns = (
-            r'id=["\']kc-logo-text["\'][^>]*background-image:\s*url\((?:["\']?)([^)"\']+)',
-            r'<img[^>]+id=["\']kc-logo-img["\'][^>]+src=["\']([^"\']+)["\']',
-            r'<img[^>]+src=["\']([^"\']*logo[^"\']*)["\']',
-        )
-        for pattern in patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                return urllib.parse.urljoin(response.url, match.group(1))
-        return None
 
     def get_auth_header(self):
         """Liefert den Authorization-Header, erneuert das Token bei Bedarf automatisch."""
